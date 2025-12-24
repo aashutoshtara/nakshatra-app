@@ -43,20 +43,22 @@ async def calculate_birth_chart(
     dob: str, 
     birth_time: str, 
     city: str,
-    lat: Optional[float] = None,
-    lng: Optional[float] = None
+    lat: float = None,
+    lng: float = None
 ) -> Dict[str, str]:
     """Calculate birth chart"""
     
     try:
-        # Use provided coordinates or default
         if lat is None or lng is None:
-            lat, lng = 28.6139, 77.2090  # Delhi default
+            lat, lng = 28.6139, 77.2090
         
         token = await get_token()
         datetime_str = f"{dob}T{birth_time}+05:30"
         
+        print(f"🔮 Calculating chart: {datetime_str} at {lat},{lng}")
+        
         async with httpx.AsyncClient() as client:
+            # Get Kundli
             response = await client.get(
                 "https://api.prokerala.com/v2/astrology/kundli",
                 params={
@@ -68,23 +70,84 @@ async def calculate_birth_chart(
             )
             data = response.json()
         
-        if "data" in data:
-            chart = data["data"]
+        # Default values
+        moon_sign = "Mesha"
+        nakshatra = "Ashwini"
+        ascendant = "Mesha"
+        nakshatra_pada = 1
+        nakshatra_lord = "Ketu"
+        
+        if data.get("status") == "ok" and "data" in data:
+            chart_data = data["data"]
+            nakshatra_details = chart_data.get("nakshatra_details", {})
             
-            nakshatra = chart.get("nakshatra", {})
-            rasi = chart.get("rasi", {})
-            ascendant = chart.get("ascendant", {})
+            # Moon Sign (Chandra Rasi)
+            chandra_rasi = nakshatra_details.get("chandra_rasi", {})
+            if chandra_rasi:
+                moon_sign = chandra_rasi.get("name", "Mesha")
             
-            return {
-                "moon_sign": rasi.get("name", "Mesha") if isinstance(rasi, dict) else "Mesha",
-                "nakshatra": nakshatra.get("name", "Ashwini") if isinstance(nakshatra, dict) else "Ashwini",
-                "ascendant": ascendant.get("name", "Mesha") if isinstance(ascendant, dict) else "Mesha"
-            }
+            # Nakshatra
+            nakshatra_info = nakshatra_details.get("nakshatra", {})
+            if nakshatra_info:
+                nakshatra = nakshatra_info.get("name", "Ashwini")
+                nakshatra_pada = nakshatra_info.get("pada", 1)
+                nakshatra_lord_info = nakshatra_info.get("lord", {})
+                if nakshatra_lord_info:
+                    nakshatra_lord = nakshatra_lord_info.get("vedic_name", "Ketu")
+            
+            print(f"   🌙 Moon Sign: {moon_sign}")
+            print(f"   ⭐ Nakshatra: {nakshatra} (Pada {nakshatra_pada})")
+            print(f"   🪐 Nakshatra Lord: {nakshatra_lord}")
+        
+        # Now get Ascendant from chart endpoint
+        async with httpx.AsyncClient() as client:
+            chart_response = await client.get(
+                "https://api.prokerala.com/v2/astrology/chart",
+                params={
+                    "ayanamsa": 1,
+                    "coordinates": f"{lat},{lng}",
+                    "datetime": datetime_str,
+                    "chart_type": "rasi"
+                },
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            chart_result = chart_response.json()
+        
+        if chart_result.get("status") == "ok" and "data" in chart_result:
+            chart_info = chart_result["data"]
+            
+            # Try to find ascendant
+            ascendant_info = chart_info.get("ascendant", {})
+            if ascendant_info and isinstance(ascendant_info, dict):
+                ascendant = ascendant_info.get("name", moon_sign)
+            elif "lagna" in chart_info:
+                lagna_info = chart_info.get("lagna", {})
+                if isinstance(lagna_info, dict):
+                    ascendant = lagna_info.get("name", moon_sign)
+            
+            print(f"   🌅 Ascendant: {ascendant}")
+        else:
+            # If chart endpoint fails, use moon sign as fallback
+            ascendant = moon_sign
+            print(f"   🌅 Ascendant (fallback): {ascendant}")
+        
+        return {
+            "moon_sign": moon_sign,
+            "nakshatra": nakshatra,
+            "ascendant": ascendant,
+            "nakshatra_pada": nakshatra_pada,
+            "nakshatra_lord": nakshatra_lord
+        }
     
     except Exception as e:
-        print(f"Birth chart error: {e}")
-    
-    return {"moon_sign": "Mesha", "nakshatra": "Ashwini", "ascendant": "Mesha"}
+        print(f"❌ Birth chart error: {e}")
+        return {
+            "moon_sign": "Mesha", 
+            "nakshatra": "Ashwini", 
+            "ascendant": "Mesha",
+            "nakshatra_pada": 1,
+            "nakshatra_lord": "Ketu"
+        }
 
 
 async def get_today_panchang() -> Dict[str, Any]:
@@ -106,7 +169,7 @@ async def get_today_panchang() -> Dict[str, Any]:
             )
             data = response.json()
         
-        if "data" in data:
+        if data.get("status") == "ok" and "data" in data:
             p = data["data"]
             return {
                 "tithi": safe_get_first(p.get("tithi", [])),
@@ -116,7 +179,7 @@ async def get_today_panchang() -> Dict[str, Any]:
             }
     
     except Exception as e:
-        print(f"Panchang error: {e}")
+        print(f"❌ Panchang error: {e}")
     
     return {
         "tithi": "Shukla Panchami",
