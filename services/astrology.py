@@ -1,8 +1,7 @@
 import httpx
 from datetime import datetime
 from config import PROKERALA_CLIENT_ID, PROKERALA_CLIENT_SECRET
-from services.geocoding import get_coordinates
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # Token cache
 _token_cache = {"token": None, "expires_at": None}
@@ -40,13 +39,21 @@ def safe_get_first(data_list, key="name", default="Unknown"):
     return default
 
 
-async def calculate_birth_chart(dob: str, birth_time: str, city: str) -> Dict[str, str]:
+async def calculate_birth_chart(
+    dob: str, 
+    birth_time: str, 
+    city: str,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None
+) -> Dict[str, str]:
     """Calculate birth chart"""
     
     try:
-        coords = await get_coordinates(city)
-        token = await get_token()
+        # Use provided coordinates or default
+        if lat is None or lng is None:
+            lat, lng = 28.6139, 77.2090  # Delhi default
         
+        token = await get_token()
         datetime_str = f"{dob}T{birth_time}+05:30"
         
         async with httpx.AsyncClient() as client:
@@ -54,7 +61,7 @@ async def calculate_birth_chart(dob: str, birth_time: str, city: str) -> Dict[st
                 "https://api.prokerala.com/v2/astrology/kundli",
                 params={
                     "ayanamsa": 1,
-                    "coordinates": f"{coords['lat']},{coords['lng']}",
+                    "coordinates": f"{lat},{lng}",
                     "datetime": datetime_str
                 },
                 headers={"Authorization": f"Bearer {token}"}
@@ -64,7 +71,6 @@ async def calculate_birth_chart(dob: str, birth_time: str, city: str) -> Dict[st
         if "data" in data:
             chart = data["data"]
             
-            # Extract values safely
             nakshatra = chart.get("nakshatra", {})
             rasi = chart.get("rasi", {})
             ascendant = chart.get("ascendant", {})

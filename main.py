@@ -1,17 +1,24 @@
 from fastapi import FastAPI, Request, BackgroundTasks, Form
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
 from typing import Optional
 import re
 
 from services.database import get_or_create_user, update_user, get_all_ready_users
 from services.whatsapp import send_message
 from services.astrology import calculate_birth_chart, get_today_panchang
+from services.geocoding import search_cities
 from services.ai import generate_daily_guidance, handle_user_query
 
 app = FastAPI(title="nakshatra-app")
 
+# Common greetings to ignore as names
+GREETINGS = [
+    "hi", "hello", "hey", "hii", "hiii", "namaste", "namaskar", 
+    "hola", "start", "begin", "help", "menu", "reset", "restart"
+]
 
-# ============== WEBHOOK ==============
+
+# ============== TWILIO WEBHOOK ==============
 
 @app.post("/webhook")
 async def webhook(
@@ -23,7 +30,6 @@ async def webhook(
     """Receive WhatsApp messages from Twilio"""
     
     try:
-        # Twilio sends form data
         phone = From.replace("whatsapp:", "").replace("+", "") if From else ""
         text = Body.strip() if Body else ""
         
@@ -32,9 +38,7 @@ async def webhook(
         if not phone or not text:
             return PlainTextResponse("")
         
-        # Process in background
         background_tasks.add_task(process_message, phone, text)
-        
         return PlainTextResponse("")
     
     except Exception as e:
@@ -42,25 +46,58 @@ async def webhook(
         return PlainTextResponse("")
 
 
-
 async def process_message(phone: str, text: str):
     """Process message based on user state"""
     
     user = await get_or_create_user(phone)
     state = user.get("state", "NEW")
+    text_lower = text.lower().strip()
     
     print(f"📩 {phone} ({state}): {text}")
     
+    # ===== RESET COMMANDS =====
+    if text_lower in ["reset", "restart", "start over", "/start"]:
+        await update_user(phone, {
+            "state": "NEW",
+            "name": None,
+            "dob": None,
+            "birth_time": None,
+            "birth_city": None,
+            "moon_sign": None,
+            "nakshatra": None,
+            "ascendant": None
+        })
+        state = "NEW"
+    
+    # ===== STATE: NEW or AWAITING_NAME =====
     if state in ["NEW", "AWAITING_NAME"]:
+        
+        # Check if it's a greeting (not a real name)
+        if state == "AWAITING_NAME" and text_lower in GREETINGS:
+            await send_message(phone,
+                "Please tell me your *actual name* 😊\n\n"
+                "For example: Rahul, Priya, Amit"
+            )
+            return
+        
         if state == "NEW":
             await send_message(phone, 
-                "🙏 *Namaste! Welcome to Nakshatra!*\n\n"
+                "🙏 *Namaste! Welcome to Nakshatra App!*\n\n"
                 "I'm your personal Vedic astrology guide.\n\n"
                 "What's your *name*?"
             )
             await update_user(phone, {"state": "AWAITING_NAME"})
         else:
+            # Validate name (should be at least 2 chars, only letters/spaces)
             name = text.strip().title()
+            
+            if len(name) < 2 or not re.match(r'^[a-zA-Z\s]+$', name):
+                await send_message(phone,
+                    "Please enter a valid name (letters only)\n\n"
+                    "For example: Rahul, Priya, Amit"
+                )
+                return
+            
             await update_user(phone, {"name": name, "state": "AWAITING_DOB"})
             await send_message(phone,
                 f"Nice to meet you, *{name}*! ✨\n\n"
@@ -69,13 +106,27 @@ async def process_message(phone: str, text: str):
                 "Example: 15-03-1992"
             )
     
+    # ===== STATE: AWAITING_DOB =====
     elif state == "AWAITING_DOB":
         match = re.match(r'(\d{1,2})[-/](\d{1,2})[-/](\d{4})', text)
         if not match:
-            await send_message(phone, "Please enter date as DD-MM-YYYY\n\nExample: 15-03-1992")
+            await send_message(phone, 
+                "Please enter date as *DD-MM-YYYY*\n\n"
+                "Example: 15-03-1992"
+            )
             return
         
         day, month, year = match.groups()
+        
+        # Validate date
+        try:
+            day_int, month_int, year_int = int(day), int(month), int(year)
+            if not (1 <= day_int <= 31 and 1 <= month_int <= 12 and 1900 <= year_int <= 2024):
+                raise ValueError("Invalid date")
+        except:
+            await send_message(phone, "Please enter a valid date\n\nExample: 15-03-1992")
+            return
+        
         dob = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
         
         await update_user(phone, {"dob": dob, "state": "AWAITING_TIME_CHOICE"})
@@ -87,14 +138,23 @@ async def process_message(phone: str, text: str):
             "Reply 1 or 2"
         )
     
+    # ===== STATE: AWAITING_TIME_CHOICE =====
     elif state == "AWAITING_TIME_CHOICE":
-        if text in ["1", "yes", "Yes"]:
+        if text_lower in ["1", "yes", "haan", "ha"]:
             await update_user(phone, {"state": "AWAITING_TIME_INPUT"})
-            await send_message(phone, "What time were you born?\n\nExample: 5:30 AM or 17:30")
+            await send_message(phone, 
+                "What time were you born?\n\n"
+                "Example: 5:30 AM or 17:30"
+            )
         else:
             await update_user(phone, {"birth_time": "12:00:00", "state": "AWAITING_CITY"})
-            await send_message(phone, "No problem! Where were you *born*?\n\nExample: Mumbai, Delhi, Jaipur")
+            await send_message(phone, 
+                "No problem! 👍\n\n"
+                "Where were you *born*? (City name)\n\n"
+                "Example: Indore, Varanasi, Pune"
+            )
     
+    # ===== STATE: AWAITING_TIME_INPUT =====
     elif state == "AWAITING_TIME_INPUT":
         time_str = "12:00:00"
         match = re.match(r'(\d{1,2}):?(\d{2})?\s*(am|pm|AM|PM)?', text)
@@ -109,42 +169,138 @@ async def process_message(phone: str, text: str):
             time_str = f"{hours:02d}:{mins}:00"
         
         await update_user(phone, {"birth_time": time_str, "state": "AWAITING_CITY"})
-        await send_message(phone, "Where were you *born*?\n\nExample: Mumbai, Delhi, Jaipur")
-    
-    elif state == "AWAITING_CITY":
-        city = text.strip().title()
-        await send_message(phone, "✨ Calculating your birth chart...")
-        
-        user = await get_or_create_user(phone)
-        dob = user.get("dob", "1990-01-01")
-        birth_time = user.get("birth_time", "12:00:00")
-        name = user.get("name", "Friend")
-        
-        chart = await calculate_birth_chart(dob, birth_time, city)
-        
-        await update_user(phone, {
-            "birth_city": city,
-            "moon_sign": chart["moon_sign"],
-            "nakshatra": chart["nakshatra"],
-            "ascendant": chart["ascendant"],
-            "state": "READY"
-        })
-        
-        panchang = await get_today_panchang()
-        guidance = await generate_daily_guidance(name, chart["moon_sign"], chart["nakshatra"], panchang)
-        
-        await send_message(phone,
-            f"🌟 *Your Vedic Profile*\n\n"
-            f"*Moon Sign:* {chart['moon_sign']}\n"
-            f"*Nakshatra:* {chart['nakshatra']}\n"
-            f"*Ascendant:* {chart['ascendant']}\n\n"
-            f"━━━━━━━━━━━━━━\n\n"
-            f"{guidance}\n\n"
-            f"━━━━━━━━━━━━━━\n\n"
-            f"You'll get daily guidance every morning!\n"
-            f"Ask me anything anytime 🙏"
+        await send_message(phone, 
+            "Where were you *born*? (City name)\n\n"
+            "Example: Indore, Varanasi, Pune"
         )
     
+    # ===== STATE: AWAITING_CITY =====
+    elif state == "AWAITING_CITY":
+        city_input = text.strip().title()
+        
+        # Search for city options
+        city_options = await search_cities(city_input)
+        
+        if not city_options:
+            await send_message(phone,
+                f"Couldn't find *{city_input}*. 🤔\n\n"
+                "Please try:\n"
+                "• Check spelling\n"
+                "• Enter nearest big city\n"
+                "• Add state name (e.g., Indore MP)"
+            )
+            return
+        
+        if len(city_options) == 1:
+            # Only one match - confirm directly
+            city = city_options[0]
+            await update_user(phone, {
+                "pending_city": city["name"],
+                "pending_lat": city["lat"],
+                "pending_lng": city["lng"],
+                "state": "AWAITING_CITY_CONFIRM"
+            })
+            await send_message(phone,
+                f"📍 Found: *{city['name']}*\n\n"
+                "Is this correct?\n\n"
+                "1️⃣ Yes\n"
+                "2️⃣ No, search again"
+            )
+        else:
+            # Multiple matches - show options
+            options_text = "📍 *Multiple locations found:*\n\n"
+            for i, city in enumerate(city_options[:5], 1):
+                options_text += f"{i}️⃣ {city['name']}\n"
+            
+            options_text += "\nReply with the number (1-5)"
+            
+            # Store options temporarily
+            await update_user(phone, {
+                "pending_cities": city_options[:5],
+                "state": "AWAITING_CITY_SELECT"
+            })
+            await send_message(phone, options_text)
+    
+    # ===== STATE: AWAITING_CITY_SELECT =====
+    elif state == "AWAITING_CITY_SELECT":
+        try:
+            selection = int(text.strip())
+            pending_cities = user.get("pending_cities", [])
+            
+            if 1 <= selection <= len(pending_cities):
+                city = pending_cities[selection - 1]
+                await update_user(phone, {
+                    "pending_city": city["name"],
+                    "pending_lat": city["lat"],
+                    "pending_lng": city["lng"],
+                    "state": "AWAITING_CITY_CONFIRM"
+                })
+                await send_message(phone,
+                    f"📍 You selected: *{city['name']}*\n\n"
+                    "Is this correct?\n\n"
+                    "1️⃣ Yes\n"
+                    "2️⃣ No, search again"
+                )
+            else:
+                await send_message(phone, "Please reply with a number from the list (1-5)")
+        except:
+            await send_message(phone, "Please reply with a number (1-5)")
+    
+    # ===== STATE: AWAITING_CITY_CONFIRM =====
+    elif state == "AWAITING_CITY_CONFIRM":
+        if text_lower in ["1", "yes", "haan", "ha", "correct", "sahi"]:
+            # City confirmed - calculate chart
+            await send_message(phone, "✨ Calculating your birth chart...")
+            
+            user = await get_or_create_user(phone)
+            city = user.get("pending_city", "Delhi")
+            lat = user.get("pending_lat", 28.6139)
+            lng = user.get("pending_lng", 77.2090)
+            dob = user.get("dob", "1990-01-01")
+            birth_time = user.get("birth_time", "12:00:00")
+            name = user.get("name", "Friend")
+            
+            chart = await calculate_birth_chart(dob, birth_time, city, lat, lng)
+            
+            await update_user(phone, {
+                "birth_city": city,
+                "latitude": lat,
+                "longitude": lng,
+                "moon_sign": chart["moon_sign"],
+                "nakshatra": chart["nakshatra"],
+                "ascendant": chart["ascendant"],
+                "state": "READY",
+                "pending_city": None,
+                "pending_lat": None,
+                "pending_lng": None,
+                "pending_cities": None
+            })
+            
+            panchang = await get_today_panchang()
+            guidance = await generate_daily_guidance(name, chart["moon_sign"], chart["nakshatra"], panchang)
+            
+            await send_message(phone,
+                f"🌟 *Your Vedic Profile*\n\n"
+                f"*Moon Sign:* {chart['moon_sign']}\n"
+                f"*Nakshatra:* {chart['nakshatra']}\n"
+                f"*Ascendant:* {chart['ascendant']}\n\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"{guidance}\n\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"You'll get daily guidance every morning!\n"
+                f"Ask me anything anytime 🙏\n\n"
+                f"_Type 'reset' to start over_"
+            )
+        else:
+            # Search again
+            await update_user(phone, {"state": "AWAITING_CITY"})
+            await send_message(phone, 
+                "No problem! Enter your birth city again:\n\n"
+                "💡 Tip: Add state name for better results\n"
+                "Example: Indore MP, Varanasi UP"
+            )
+    
+    # ===== STATE: READY =====
     elif state == "READY":
         name = user.get("name", "Friend")
         moon_sign = user.get("moon_sign", "Mesha")
@@ -153,16 +309,14 @@ async def process_message(phone: str, text: str):
         response = await handle_user_query(name, moon_sign, nakshatra, text)
         await send_message(phone, response)
 
+
 # ============== HEALTH CHECK ==============
 
 @app.get("/")
 async def health():
-    return {"status": "running", "app": "nakshatra-app"}
+    return {"status": "running", "app": "JyotiSaathi"}
 
-
-# ============== RUN ==============
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
