@@ -1,27 +1,45 @@
 import httpx
-from config import WATI_API_KEY, WATI_BASE_URL
+import base64
+from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER
 
 
 async def send_message(phone: str, message: str) -> bool:
-    """Send WhatsApp message via Wati.io"""
+    """Send WhatsApp message via Twilio"""
     
-    # Remove + if present
-    phone = phone.replace("+", "")
+    # Format phone number
+    phone = phone.replace("+", "").replace(" ", "")
+    if not phone.startswith("91"):
+        phone = f"91{phone}"
     
-    url = f"{WATI_BASE_URL}/api/v1/sendSessionMessage/{phone}"
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_ACCOUNT_SID}/Messages.json"
+    
+    # Basic auth
+    auth_string = base64.b64encode(
+        f"{TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}".encode()
+    ).decode()
     
     headers = {
-        "Authorization": f"Bearer {WATI_API_KEY}",
-        "Content-Type": "application/json"
+        "Authorization": f"Basic {auth_string}",
+        "Content-Type": "application/x-www-form-urlencoded"
     }
     
-    payload = {"messageText": message}
+    data = {
+        "From": f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
+        "To": f"whatsapp:+{phone}",
+        "Body": message
+    }
     
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(url, json=payload, headers=headers)
+            response = await client.post(url, headers=headers, data=data)
             print(f"📤 Message to {phone}: {response.status_code}")
-            return response.status_code == 200
+            
+            if response.status_code in [200, 201]:
+                return True
+            else:
+                print(f"❌ Error: {response.text[:200]}")
+                return False
+                
     except Exception as e:
-        print(f"❌ WhatsApp error: {e}")
+        print(f"❌ Twilio error: {e}")
         return False

@@ -1,7 +1,7 @@
-from fastapi import FastAPI, Request, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, BackgroundTasks, Form
+from fastapi.responses import PlainTextResponse
+from typing import Optional
 import re
-from datetime import datetime
 
 from services.database import get_or_create_user, update_user, get_all_ready_users
 from services.whatsapp import send_message
@@ -14,27 +14,33 @@ app = FastAPI(title="nakshatra-app")
 # ============== WEBHOOK ==============
 
 @app.post("/webhook")
-async def webhook(request: Request, background_tasks: BackgroundTasks):
-    """Receive WhatsApp messages from Wati"""
+async def webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    From: Optional[str] = Form(None),
+    Body: Optional[str] = Form(None)
+):
+    """Receive WhatsApp messages from Twilio"""
     
     try:
-        body = await request.json()
+        # Twilio sends form data
+        phone = From.replace("whatsapp:", "").replace("+", "") if From else ""
+        text = Body.strip() if Body else ""
         
-        # Extract message
-        phone = body.get("waId", "")
-        text = body.get("text", "").strip()
+        print(f"🔍 Received - Phone: {phone}, Text: {text}")
         
         if not phone or not text:
-            return JSONResponse({"status": "ignored"})
+            return PlainTextResponse("")
         
         # Process in background
         background_tasks.add_task(process_message, phone, text)
         
-        return JSONResponse({"status": "ok"})
+        return PlainTextResponse("")
     
     except Exception as e:
-        print(f"Webhook error: {e}")
-        return JSONResponse({"status": "error"})
+        print(f"❌ Webhook error: {e}")
+        return PlainTextResponse("")
+
 
 
 async def process_message(phone: str, text: str):
@@ -109,16 +115,13 @@ async def process_message(phone: str, text: str):
         city = text.strip().title()
         await send_message(phone, "✨ Calculating your birth chart...")
         
-        # Get user data
         user = await get_or_create_user(phone)
         dob = user.get("dob", "1990-01-01")
         birth_time = user.get("birth_time", "12:00:00")
         name = user.get("name", "Friend")
         
-        # Calculate chart
         chart = await calculate_birth_chart(dob, birth_time, city)
         
-        # Update user
         await update_user(phone, {
             "birth_city": city,
             "moon_sign": chart["moon_sign"],
@@ -127,7 +130,6 @@ async def process_message(phone: str, text: str):
             "state": "READY"
         })
         
-        # Get panchang & generate guidance
         panchang = await get_today_panchang()
         guidance = await generate_daily_guidance(name, chart["moon_sign"], chart["nakshatra"], panchang)
         
@@ -150,50 +152,6 @@ async def process_message(phone: str, text: str):
         
         response = await handle_user_query(name, moon_sign, nakshatra, text)
         await send_message(phone, response)
-
-
-# ============== BROADCAST ==============
-
-@app.get("/broadcast")
-async def broadcast(background_tasks: BackgroundTasks):
-    """Send daily guidance to all users"""
-    
-    users = await get_all_ready_users()
-    
-    if not users:
-        return {"status": "no_users"}
-    
-    background_tasks.add_task(send_broadcast, users)
-    return {"status": "started", "count": len(users)}
-
-
-async def send_broadcast(users: list):
-    """Send to all users"""
-    
-    panchang = await get_today_panchang()
-    
-    for user in users:
-        try:
-            guidance = await generate_daily_guidance(
-                user.get("name", "Friend"),
-                user.get("moon_sign", "Mesha"),
-                user.get("nakshatra", "Ashwini"),
-                panchang
-            )
-            
-            await send_message(
-                user["phone"],
-                f"🌅 *Good Morning, {user.get('name', 'Friend')}!*\n\n{guidance}"
-            )
-            
-            import asyncio
-            await asyncio.sleep(1)
-            
-        except Exception as e:
-            print(f"Broadcast error for {user.get('phone')}: {e}")
-    
-    print(f"✅ Broadcast done: {len(users)} users")
-
 
 # ============== HEALTH CHECK ==============
 
