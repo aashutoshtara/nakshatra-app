@@ -13,8 +13,9 @@ app = FastAPI(title="nakshatra-app")
 
 # Common greetings to ignore as names
 GREETINGS = [
-    "hi", "hello", "hey", "hii", "hiii", "namaste", "namaskar", 
-    "hola", "start", "begin", "help", "menu", "reset", "restart"
+    "hi", "hello", "hey", "hii", "hiii", "hiiii", "namaste", "namaskar", 
+    "hola", "start", "begin", "help", "menu", "reset", "restart",
+    "yo", "sup", "helo", "hllo", "hy", "good morning", "good evening"
 ]
 
 
@@ -55,11 +56,12 @@ async def process_message(phone: str, text: str):
     
     print(f"📩 {phone} ({state}): {text}")
     
-    # ===== RESET COMMANDS =====
+    # ===== RESET COMMAND =====
     if text_lower in ["reset", "restart", "start over", "/start"]:
         await update_user(phone, {
             "state": "NEW",
             "name": None,
+            "gender": None,
             "dob": None,
             "birth_time": None,
             "birth_city": None,
@@ -69,42 +71,70 @@ async def process_message(phone: str, text: str):
         })
         state = "NEW"
     
-    # ===== STATE: NEW or AWAITING_NAME =====
-    if state in ["NEW", "AWAITING_NAME"]:
-        
-        # Check if it's a greeting (not a real name)
-        if state == "AWAITING_NAME" and text_lower in GREETINGS:
+    # ===== STATE: NEW =====
+    if state == "NEW":
+        await send_message(phone, 
+            "🙏 *Namaste! Welcome to Nakshatra!*\n\n"
+            "I'm your personal Vedic astrology guide.\n\n"
+            "What's your *name*?"
+        )
+        await update_user(phone, {"state": "AWAITING_NAME"})
+    
+    # ===== STATE: AWAITING_NAME =====
+    elif state == "AWAITING_NAME":
+        # Check if it's a greeting
+        if text_lower in GREETINGS:
             await send_message(phone,
                 "Please tell me your *actual name* 😊\n\n"
+                "For example: Swapn, Priyanka, Tejas, Megha"
+            )
+            return
+        
+        name = text.strip().title()
+        
+        # Validate name
+        if len(name) < 2:
+            await send_message(phone,
+                "Name too short. Please enter your full name.\n\n"
+                "For example: Swapn, Priyanka, Tejas, Megha"
+            )
+            return
+        
+        if not re.match(r'^[a-zA-Z\s]+$', name):
+            await send_message(phone,
+                "Please enter a valid name (letters only)\n\n"
                 "For example: Rahul, Priya, Amit"
             )
             return
         
-        if state == "NEW":
-            await send_message(phone, 
-                "🙏 *Namaste! Welcome to Nakshatra App!*\n\n"
-                "I'm your personal Vedic astrology guide.\n\n"
-                "What's your *name*?"
-            )
-            await update_user(phone, {"state": "AWAITING_NAME"})
+        await update_user(phone, {"name": name, "state": "AWAITING_GENDER"})
+        await send_message(phone,
+            f"Nice to meet you, *{name}*! ✨\n\n"
+            "Are you:\n\n"
+            "1️⃣ Male\n"
+            "2️⃣ Female"
+        )
+    
+    # ===== STATE: AWAITING_GENDER =====
+    elif state == "AWAITING_GENDER":
+        if text_lower in ["1", "male", "m", "boy", "man", "ladka"]:
+            gender = "male"
+        elif text_lower in ["2", "female", "f", "girl", "woman", "ladki"]:
+            gender = "female"
         else:
-            # Validate name (should be at least 2 chars, only letters/spaces)
-            name = text.strip().title()
-            
-            if len(name) < 2 or not re.match(r'^[a-zA-Z\s]+$', name):
-                await send_message(phone,
-                    "Please enter a valid name (letters only)\n\n"
-                    "For example: Rahul, Priya, Amit"
-                )
-                return
-            
-            await update_user(phone, {"name": name, "state": "AWAITING_DOB"})
-            await send_message(phone,
-                f"Nice to meet you, *{name}*! ✨\n\n"
-                "What's your *date of birth*?\n\n"
-                "Format: DD-MM-YYYY\n"
-                "Example: 15-03-1992"
+            await send_message(phone, 
+                "Please reply:\n\n"
+                "1️⃣ for Male\n"
+                "2️⃣ for Female"
             )
+            return
+        
+        await update_user(phone, {"gender": gender, "state": "AWAITING_DOB"})
+        await send_message(phone,
+            "What's your *date of birth*?\n\n"
+            "Format: DD-MM-YYYY\n"
+            "Example: 15-03-1992"
+        )
     
     # ===== STATE: AWAITING_DOB =====
     elif state == "AWAITING_DOB":
@@ -178,7 +208,6 @@ async def process_message(phone: str, text: str):
     elif state == "AWAITING_CITY":
         city_input = text.strip().title()
         
-        # Search for city options
         city_options = await search_cities(city_input)
         
         if not city_options:
@@ -192,7 +221,6 @@ async def process_message(phone: str, text: str):
             return
         
         if len(city_options) == 1:
-            # Only one match - confirm directly
             city = city_options[0]
             await update_user(phone, {
                 "pending_city": city["name"],
@@ -207,14 +235,12 @@ async def process_message(phone: str, text: str):
                 "2️⃣ No, search again"
             )
         else:
-            # Multiple matches - show options
             options_text = "📍 *Multiple locations found:*\n\n"
             for i, city in enumerate(city_options[:5], 1):
                 options_text += f"{i}️⃣ {city['name']}\n"
             
             options_text += "\nReply with the number (1-5)"
             
-            # Store options temporarily
             await update_user(phone, {
                 "pending_cities": city_options[:5],
                 "state": "AWAITING_CITY_SELECT"
@@ -249,7 +275,6 @@ async def process_message(phone: str, text: str):
     # ===== STATE: AWAITING_CITY_CONFIRM =====
     elif state == "AWAITING_CITY_CONFIRM":
         if text_lower in ["1", "yes", "haan", "ha", "correct", "sahi"]:
-            # City confirmed - calculate chart
             await send_message(phone, "✨ Calculating your birth chart...")
             
             user = await get_or_create_user(phone)
@@ -259,6 +284,7 @@ async def process_message(phone: str, text: str):
             dob = user.get("dob", "1990-01-01")
             birth_time = user.get("birth_time", "12:00:00")
             name = user.get("name", "Friend")
+            gender = user.get("gender", "male")
             
             chart = await calculate_birth_chart(dob, birth_time, city, lat, lng)
             
@@ -277,22 +303,27 @@ async def process_message(phone: str, text: str):
             })
             
             panchang = await get_today_panchang()
-            guidance = await generate_daily_guidance(name, chart["moon_sign"], chart["nakshatra"], panchang)
+            guidance = await generate_daily_guidance(
+                name, 
+                chart["moon_sign"], 
+                chart["nakshatra"], 
+                gender,
+                panchang
+            )
             
             await send_message(phone,
                 f"🌟 *Your Vedic Profile*\n\n"
+                f"*Name:* {name}\n"
                 f"*Moon Sign:* {chart['moon_sign']}\n"
                 f"*Nakshatra:* {chart['nakshatra']}\n"
                 f"*Ascendant:* {chart['ascendant']}\n\n"
                 f"━━━━━━━━━━━━━━\n\n"
                 f"{guidance}\n\n"
                 f"━━━━━━━━━━━━━━\n\n"
-                f"You'll get daily guidance every morning!\n"
-                f"Ask me anything anytime 🙏\n\n"
+                f"Ask me anything anytime! 🙏\n\n"
                 f"_Type 'reset' to start over_"
             )
         else:
-            # Search again
             await update_user(phone, {"state": "AWAITING_CITY"})
             await send_message(phone, 
                 "No problem! Enter your birth city again:\n\n"
@@ -303,10 +334,11 @@ async def process_message(phone: str, text: str):
     # ===== STATE: READY =====
     elif state == "READY":
         name = user.get("name", "Friend")
+        gender = user.get("gender", "male")
         moon_sign = user.get("moon_sign", "Mesha")
         nakshatra = user.get("nakshatra", "Ashwini")
         
-        response = await handle_user_query(name, moon_sign, nakshatra, text)
+        response = await handle_user_query(name, moon_sign, nakshatra, gender, text)
         await send_message(phone, response)
 
 
