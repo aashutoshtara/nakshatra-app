@@ -5,7 +5,7 @@ import re
 
 from services.database import get_or_create_user, update_user, get_all_ready_users
 from services.whatsapp import send_message
-from services.telegram import send_telegram_message  # ← ADD THIS
+from services.telegram import send_telegram_message
 from services.astrology import calculate_birth_chart, get_today_panchang
 from services.geocoding import search_cities
 from services.ai import generate_daily_guidance, handle_user_query
@@ -337,36 +337,46 @@ async def process_message(phone: str, text: str, platform: str = "whatsapp"):
             name = user.get("name", "Friend")
             gender = user.get("gender", "male")
             
-            # Get complete chart with ONE API call
+            # Get complete chart
             chart = await calculate_birth_chart(dob, birth_time, lat, lng)
             
-            # Store all chart data
-            await update_user(phone, {
-                "birth_city": city,
-                "latitude": lat,
-                "longitude": lng,
-                "moon_sign": chart.get("moon_sign"),
-                "sun_sign": chart.get("sun_sign"),
-                "nakshatra": chart.get("nakshatra"),
-                "nakshatra_pada": chart.get("nakshatra_pada"),
-                "nakshatra_lord": chart.get("nakshatra_lord"),
-                "ascendant": chart.get("ascendant"),
-                "current_dasha": chart.get("current_dasha"),
-                "current_antardasha": chart.get("current_antardasha"),
-                "dasha_end_date": chart.get("dasha_end_date"),
-                "antardasha_end_date": chart.get("antardasha_end_date"),
-                "mangal_dosha": chart.get("mangal_dosha"),
-                "deity": chart.get("deity"),
-                "gana": chart.get("gana"),
-                "lucky_color": chart.get("lucky_color"),
-                "birth_stone": chart.get("birth_stone"),
-                "chart_data": chart,
-                "state": "READY",
-                "pending_city": None,
-                "pending_lat": None,
-                "pending_lng": None,
-                "pending_cities": None
-            })
+            print(f"📊 Chart: {chart}")
+            
+            # Store ONLY essential fields (no chart_data blob)
+            try:
+                await update_user(phone, {
+                    "birth_city": city,
+                    "latitude": lat,
+                    "longitude": lng,
+                    "moon_sign": chart.get("moon_sign"),
+                    "sun_sign": chart.get("sun_sign"),
+                    "nakshatra": chart.get("nakshatra"),
+                    "nakshatra_pada": chart.get("nakshatra_pada"),
+                    "nakshatra_lord": chart.get("nakshatra_lord"),
+                    "ascendant": chart.get("ascendant"),
+                    "current_dasha": chart.get("current_dasha"),
+                    "current_antardasha": chart.get("current_antardasha"),
+                    "dasha_end_date": chart.get("dasha_end_date"),
+                    "antardasha_end_date": chart.get("antardasha_end_date"),
+                    "mangal_dosha": chart.get("mangal_dosha", False),
+                    "deity": chart.get("deity"),
+                    "gana": chart.get("gana"),
+                    "lucky_color": chart.get("lucky_color"),
+                    "birth_stone": chart.get("birth_stone"),
+                    "lucky_direction": chart.get("lucky_direction"),
+                    "state": "READY",
+                    "pending_city": None,
+                    "pending_lat": None,
+                    "pending_lng": None,
+                    "pending_cities": None
+                })
+                print("✅ User updated to READY state")
+            except Exception as e:
+                print(f"❌ Update failed: {e}")
+            
+            # Verify update
+            user_check = await get_or_create_user(phone)
+            print(f"🔍 State after update: {user_check.get('state')}")
             
             # Build profile message
             mangal_warning = "\n⚠️ *Mangal Dosha:* Yes" if chart.get("mangal_dosha") else ""
@@ -399,8 +409,7 @@ async def process_message(phone: str, text: str, platform: str = "whatsapp"):
             await update_user(phone, {"state": "AWAITING_CITY"})
             await reply(
                 "No problem! Let's try again.\n\n"
-                "Where were you *born*? (City name)\n\n"
-                "Example: Indore, Madhya Pradesh"
+                "Where were you *born*? (City name)"
             )
             return
         
