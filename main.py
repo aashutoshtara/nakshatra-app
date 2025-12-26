@@ -16,7 +16,7 @@ app = FastAPI(title="nakshatra-app")
 GREETINGS = [
     "hi", "hello", "hey", "hii", "hiii", "hiiii", "namaste", "namaskar", 
     "hola", "start", "begin", "help", "menu", "reset", "restart",
-    "yo", "sup", "helo", "hllo", "hy", "good morning", "good evening",
+    "yo", "sup", "he    lo", "hllo", "hy", "good morning", "good evening",
     "/start"
 ]
 
@@ -337,15 +337,30 @@ async def process_message(phone: str, text: str, platform: str = "whatsapp"):
             name = user.get("name", "Friend")
             gender = user.get("gender", "male")
             
-            chart = await calculate_birth_chart(dob, birth_time, city, lat, lng)
+            # Get complete chart with ONE API call
+            chart = await calculate_birth_chart(dob, birth_time, lat, lng)
             
+            # Store all chart data
             await update_user(phone, {
                 "birth_city": city,
                 "latitude": lat,
                 "longitude": lng,
-                "moon_sign": chart["moon_sign"],
-                "nakshatra": chart["nakshatra"],
-                "ascendant": chart["ascendant"],
+                "moon_sign": chart.get("moon_sign"),
+                "sun_sign": chart.get("sun_sign"),
+                "nakshatra": chart.get("nakshatra"),
+                "nakshatra_pada": chart.get("nakshatra_pada"),
+                "nakshatra_lord": chart.get("nakshatra_lord"),
+                "ascendant": chart.get("ascendant"),
+                "current_dasha": chart.get("current_dasha"),
+                "current_antardasha": chart.get("current_antardasha"),
+                "dasha_end_date": chart.get("dasha_end_date"),
+                "antardasha_end_date": chart.get("antardasha_end_date"),
+                "mangal_dosha": chart.get("mangal_dosha"),
+                "deity": chart.get("deity"),
+                "gana": chart.get("gana"),
+                "lucky_color": chart.get("lucky_color"),
+                "birth_stone": chart.get("birth_stone"),
+                "chart_data": chart,
                 "state": "READY",
                 "pending_city": None,
                 "pending_lat": None,
@@ -353,44 +368,45 @@ async def process_message(phone: str, text: str, platform: str = "whatsapp"):
                 "pending_cities": None
             })
             
-            panchang = await get_today_panchang()
-            guidance = await generate_daily_guidance(
-                name, 
-                chart["moon_sign"], 
-                chart["nakshatra"], 
-                gender,
-                panchang
-            )
+            # Build profile message
+            mangal_warning = "\n⚠️ *Mangal Dosha:* Yes" if chart.get("mangal_dosha") else ""
             
             await reply(
-                f"🌟 *Your Vedic Profile*\n\n"
-                f"*Name:* {name}\n"
-                f"*Moon Sign:* {chart['moon_sign']}\n"
-                f"*Nakshatra:* {chart['nakshatra']}\n"
-                f"*Ascendant:* {chart['ascendant']}\n\n"
+                f"🌟 *Your Vedic Birth Chart*\n\n"
+                f"🌙 *Moon Sign:* {chart.get('moon_sign')}\n"
+                f"☀️ *Sun Sign:* {chart.get('sun_sign')}\n"
+                f"⭐ *Nakshatra:* {chart.get('nakshatra')} (Pada {chart.get('nakshatra_pada')})\n"
+                f"🔱 *Nakshatra Lord:* {chart.get('nakshatra_lord')}\n"
+                f"🕉️ *Deity:* {chart.get('deity')}\n"
+                f"{mangal_warning}\n\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"🔮 *Current Period*\n"
+                f"Mahadasha: {chart.get('current_dasha')} (until {chart.get('dasha_end_date')})\n"
+                f"Antardasha: {chart.get('current_antardasha')} (until {chart.get('antardasha_end_date')})\n\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"💎 *Lucky*\n"
+                f"Color: {chart.get('lucky_color')}\n"
+                f"Stone: {chart.get('birth_stone')}\n"
+                f"Direction: {chart.get('lucky_direction', 'N/A')}\n\n"
                 f"━━━━━━━━━━━━━━\n\n"
-                f"{guidance}\n\n"
-                f"━━━━━━━━━━━━━━\n\n"
-                f"Ask me anything anytime! 🙏\n\n"
+                f"Type *'today'* for daily guidance!\n"
+                f"Or ask me anything about your chart 🙏\n\n"
                 f"_Type 'reset' to start over_"
             )
-        else:
-            await update_user(phone, {"state": "AWAITING_CITY"})
-            await reply(
-                "No problem! Enter your birth city again:\n\n"
-                "💡 Tip: Add state name for better results\n"
-                "Example: Indore MP, Varanasi UP"
-            )
-        return
+            return
     
     # ===== STATE: READY =====
+
     elif state == "READY":
         name = user.get("name", "Friend")
         gender = user.get("gender", "male")
         moon_sign = user.get("moon_sign", "Mesha")
         nakshatra = user.get("nakshatra", "Ashwini")
+        chart_data = user.get("chart_data", {})
         
-        response = await handle_user_query(name, moon_sign, nakshatra, gender, text)
+        response = await handle_user_query(
+            name, moon_sign, nakshatra, gender, text, chart_data
+        )
         await reply(response)
         return
 

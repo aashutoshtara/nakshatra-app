@@ -5,12 +5,12 @@ from typing import Dict, Any
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# Indian Standard Time (UTC + 5:30)
+# Indian Standard Time
 IST = timezone(timedelta(hours=5, minutes=30))
 
-# Model choices
-MODEL_FAST = "claude-haiku-4-5-20251001"      # Quick, cheap
-MODEL_QUALITY = "claude-sonnet-4-20250514"     # Better quality
+# Models
+MODEL_QUALITY = "claude-sonnet-4-5-20250929"
+MODEL_FAST = "claude-4-5-haiku-20251001"
 
 
 def get_current_date():
@@ -24,90 +24,138 @@ def get_current_date():
     }
 
 
+def format_planets(planets: Dict) -> str:
+    """Format planet positions for prompt"""
+    if not planets:
+        return "Planet data not available"
+    
+    lines = []
+    for planet, data in planets.items():
+        if planet != "Ascendant":
+            retro = " (R)" if data.get("retrograde") else ""
+            lines.append(f"- {planet}: {data.get('sign', 'Unknown')}{retro}")
+    
+    return "\n".join(lines)
+
+
 async def generate_daily_guidance(
     name: str,
     moon_sign: str,
     nakshatra: str,
     gender: str = "male",
-    panchang: Dict[str, Any] = None
+    panchang: Dict[str, Any] = None,
+    chart_data: Dict[str, Any] = None
 ) -> str:
-    """Generate personalized daily guidance - Uses QUALITY model"""
+    """Generate precise daily guidance using full chart"""
     
     current = get_current_date()
     panchang = panchang or {}
+    chart_data = chart_data or {}
     
-    prompt = f"""You are Nakshatra, a professional Vedic astrology advisor. Provide accurate, specific guidance.
+    # Extract chart details
+    current_dasha = chart_data.get("current_dasha", "Unknown")
+    current_antardasha = chart_data.get("current_antardasha", "Unknown")
+    nakshatra_lord = chart_data.get("nakshatra_lord", "Unknown")
+    ascendant = chart_data.get("ascendant", "Unknown")
+    planets = chart_data.get("planets", {})
+    mangal_dosha = chart_data.get("mangal_dosha", False)
+    
+    prompt = f"""You are Nakshatra, an expert Vedic astrologer providing precise predictions.
 
 ═══════════════════════════════════════
-CRITICAL DATE INFORMATION:
+CURRENT DATE: {current['date']} ({current['day']})
+YEAR: {current['year']}
 ═══════════════════════════════════════
-- TODAY IS: {current['date']} ({current['day']})
-- CURRENT YEAR: {current['year']}
-- CURRENT MONTH: {current['month']}
-
-STRICT DATE RULES:
-- NEVER mention 2024 or any past year
-- NEVER mention past months
-- Only discuss TODAY or FUTURE dates
-- For future, use relative terms: "tomorrow", "this week", "next month" and/or precise month names based on their chart calculations
 
 ═══════════════════════════════════════
-USER PROFILE:
+USER'S BIRTH CHART:
 ═══════════════════════════════════════
-- Name: {name}
-- Gender: {gender}
-- Moon Sign (Rashi): {moon_sign}
-- Nakshatra: {nakshatra}
+Name: {name}
+Gender: {gender}
+
+CORE CHART:
+- Moon Sign (Chandra Rashi): {moon_sign}
+- Nakshatra: {nakshatra} (Pada {chart_data.get('nakshatra_pada', 1)})
+- Nakshatra Lord: {nakshatra_lord}
+- Ascendant (Lagna): {ascendant}
+- Sun Sign: {chart_data.get('sun_sign', 'Unknown')}
+
+CURRENT PLANETARY PERIOD:
+- Mahadasha: {current_dasha}
+- Antardasha: {current_antardasha}
+- Dasha ends: {chart_data.get('dasha_end_date', 'Unknown')}
+
+BIRTH CHART PLANETS:
+{format_planets(planets)}
+
+SPECIAL FACTORS:
+- Mangal Dosha: {"Yes" if mangal_dosha else "No"}
+- Nakshatra Deity: {chart_data.get('deity', 'Unknown')}
+- Gana: {chart_data.get('gana', 'Unknown')}
+- Birth Stone: {chart_data.get('birth_stone', 'Unknown')}
 
 ═══════════════════════════════════════
 TODAY'S PANCHANG:
 ═══════════════════════════════════════
-- Tithi: {panchang.get('tithi', 'Not available')}
-- Nakshatra of the day: {panchang.get('nakshatra', 'Not available')}
-- Day: {current['day']}
+- Tithi: {panchang.get('tithi', 'Unknown')}
+- Nakshatra: {panchang.get('nakshatra', 'Unknown')}
+- Yoga: {panchang.get('yoga', 'Unknown')}
+- Karana: {panchang.get('karana', 'Unknown')}
+- Rahu Kaal: {panchang.get('rahu_kaal_start', '')} - {panchang.get('rahu_kaal_end', '')}
+- Moon Transit: {panchang.get('moon_sign_today', 'Unknown')}
 
 ═══════════════════════════════════════
-GENERATE TODAY'S GUIDANCE:
+ANALYSIS REQUIRED:
 ═══════════════════════════════════════
 
-Structure your response EXACTLY like this:
+Analyze the interaction between:
+1. Today's transiting Moon in {panchang.get('moon_sign_today', 'Unknown')} vs birth Moon in {moon_sign}
+2. Today's nakshatra ({panchang.get('nakshatra', 'Unknown')}) vs birth nakshatra ({nakshatra})
+3. Current {current_dasha}/{current_antardasha} dasha influence
+4. Today's tithi and yoga effects on {moon_sign} natives
+
+═══════════════════════════════════════
+OUTPUT FORMAT:
+═══════════════════════════════════════
 
 🌅 Good Morning, {name}!
 
-Today ({current['day']}) brings [one line about overall energy based on their moon sign + today's panchang].
+📊 TODAY'S ENERGY FOR YOU:
+[2 lines analyzing Moon transit impact on their chart + dasha influence]
 
 ✅ DO TODAY:
-- [Specific action] — [Reason tied to {moon_sign} or {nakshatra}]
-- [Specific action] — [Reason]
-- [Specific action] — [Reason]
+- [Action] — [Precise reason: e.g., "Moon transits your 5th house, favoring creativity"]
+- [Action] — [Reason tied to current dasha/antardasha]
+- [Action] — [Reason tied to today's nakshatra compatibility]
 
 ❌ AVOID TODAY:
-- [Thing to avoid] — [Reason based on planetary position]
-- [Thing to avoid] — [Reason]
-- [Thing to avoid] — [Reason]
+- [Thing] — [Reason: e.g., "Rahu Kaal from X-Y affects your 7th lord"]
+- [Thing] — [Reason tied to challenging transit]
+- [Thing] — [Reason tied to tithi]
 
-⏰ Best Time: [Time range] — [Why this window works for them]
+⏰ BEST TIME: [Time] — [Why: based on Rahu Kaal and planetary hours]
 
-🎨 Lucky Color: [Color] — [Connection to their chart]
+🎨 LUCKY COLOR: {chart_data.get('lucky_color', 'Unknown')} — [Why this works for {nakshatra}]
 
-🙏 Today's Practice: [Specific mantra or simple ritual] — [Why it helps {nakshatra} natives]
+🙏 TODAY'S REMEDY:
+[Specific mantra or practice for {nakshatra_lord} or current dasha lord]
 
 ═══════════════════════════════════════
 STRICT RULES:
 ═══════════════════════════════════════
-- NEVER use asterisks for roleplay (*smiles*, *adjusts*)
-- Be professional, warm, direct
-- Every point MUST have a specific reason
-- Be SPECIFIC to {moon_sign} moon sign and {nakshatra} nakshatra
-- NO generic advice
-- Under 200 words total
-- Use the exact emoji format shown above
+- NEVER mention 2024 or past dates
+- NO asterisk roleplay (*smiles*, etc.)
+- Every point MUST have astrological reasoning
+- Be SPECIFIC to their exact chart
+- Under 220 words
+- Professional, warm tone
+- For future dates, use precise months and years based on user's chart and dasha
 
 Generate now:"""
 
     response = client.messages.create(
-        model=MODEL_QUALITY,  # Using Sonnet for quality
-        max_tokens=500,
+        model=MODEL_QUALITY,
+        max_tokens=600,
         messages=[{"role": "user", "content": prompt}]
     )
     
@@ -119,60 +167,74 @@ async def handle_user_query(
     moon_sign: str,
     nakshatra: str,
     gender: str,
-    question: str
+    question: str,
+    chart_data: Dict[str, Any] = None
 ) -> str:
-    """Handle user's astrology question"""
+    """Handle precise astrology queries"""
     
     current = get_current_date()
+    chart_data = chart_data or {}
     
-    # Determine if this needs quality model
+    # Check if complex question
     complex_keywords = ["career", "marriage", "love", "money", "health", "future", 
-                       "year", "month", "job", "relationship", "business", "prediction"]
+                       "year", "month", "job", "relationship", "business", "when",
+                       "prediction", "forecast", "dasha", "transit"]
     needs_quality = any(word in question.lower() for word in complex_keywords)
     
-    model = MODEL_QUALITY if needs_quality else MODEL_FAST
+    current_dasha = chart_data.get("current_dasha", "Unknown")
+    current_antardasha = chart_data.get("current_antardasha", "Unknown")
     
-    prompt = f"""You are Nakshatra, a professional Vedic astrology advisor.
+    prompt = f"""You are Nakshatra, an expert Vedic astrologer.
 
 ═══════════════════════════════════════
-CRITICAL DATE INFORMATION:
+TODAY: {current['date']} ({current['day']})
+YEAR: {current['year']} (NEVER mention 2024 or past years)
 ═══════════════════════════════════════
-- TODAY IS: {current['date']} ({current['day']})
-- CURRENT YEAR: {current['year']}
-- NEVER mention 2024 or past years
-- For future: use "coming weeks", "next month" or precise month names based on their chart calculations
 
 ═══════════════════════════════════════
-USER PROFILE:
+USER'S CHART:
 ═══════════════════════════════════════
-- Name: {name}
-- Gender: {gender}  
-- Moon Sign: {moon_sign}
-- Nakshatra: {nakshatra}
+Name: {name} | Gender: {gender}
+Moon Sign: {moon_sign}
+Nakshatra: {nakshatra} (Lord: {chart_data.get('nakshatra_lord', 'Unknown')})
+Ascendant: {chart_data.get('ascendant', 'Unknown')}
+Sun Sign: {chart_data.get('sun_sign', 'Unknown')}
+
+Current Dasha: {current_dasha} / {current_antardasha}
+Dasha until: {chart_data.get('dasha_end_date', 'Unknown')}
+
+Mangal Dosha: {"Yes" if chart_data.get('mangal_dosha') else "No"}
 
 ═══════════════════════════════════════
 QUESTION: {question}
 ═══════════════════════════════════════
 
-RESPONSE FORMAT:
-1. Direct answer to their question
-2. Astrological reasoning (WHY - based on {moon_sign} moon sign & {nakshatra})
-3. Specific timeline if applicable
-4. One practical suggestion
+RESPONSE STRUCTURE:
+1. Direct answer with SPECIFIC TIMELINE
+2. Astrological reasoning (cite their dasha, moon sign, transits)
+3. What to watch for
+4. One actionable suggestion
+
+EXAMPLES OF PRECISE ANSWERS:
+- "Your {current_dasha} mahadasha runs until {chart_data.get('dasha_end_date', 'Unknown')}, which means..."
+- "With Moon in {moon_sign} and current {current_antardasha} antardasha..."
+- "Since your 7th lord is in X, marriage prospects improve after..."
 
 RULES:
-- NEVER use asterisks (*smiles*, *thinks*)
-- Be specific to THEIR chart, not generic
-- Include reasoning with every insight
-- Professional but warm tone
-- Under 200 words
-- If not astrology-related, redirect politely
+- Be SPECIFIC with timelines (months, periods)
+- Reference their actual dasha periods
+- No generic advice
+- NO roleplay or asterisks
+- Under 150 words
+- If question unrelated to astrology, redirect politely
 
 Respond:"""
 
+    model = MODEL_QUALITY if needs_quality else MODEL_FAST
+    
     response = client.messages.create(
         model=model,
-        max_tokens=450,
+        max_tokens=400,
         messages=[{"role": "user", "content": prompt}]
     )
     
@@ -181,62 +243,93 @@ Respond:"""
 
 async def generate_birth_chart_summary(
     name: str,
-    moon_sign: str,
-    nakshatra: str,
-    ascendant: str,
-    gender: str
+    gender: str,
+    chart_data: Dict[str, Any]
 ) -> str:
-    """Generate personalized birth chart summary - Uses QUALITY model"""
+    """Generate detailed birth chart summary"""
     
     current = get_current_date()
     
-    prompt = f"""You are Nakshatra, a professional Vedic astrology advisor.
+    moon_sign = chart_data.get("moon_sign", "Unknown")
+    nakshatra = chart_data.get("nakshatra", "Unknown")
+    ascendant = chart_data.get("ascendant", "Unknown")
+    current_dasha = chart_data.get("current_dasha", "Unknown")
+    current_antardasha = chart_data.get("current_antardasha", "Unknown")
+    
+    prompt = f"""You are Nakshatra, an expert Vedic astrologer.
 
-Today: {current['date']}
+═══════════════════════════════════════
+COMPLETE BIRTH CHART ANALYSIS
+═══════════════════════════════════════
 
-Create a PERSONALIZED birth chart summary for:
-- Name: {name}
-- Gender: {gender}
+Name: {name}
+Gender: {gender}
+
+CORE POSITIONS:
 - Moon Sign: {moon_sign}
-- Nakshatra: {nakshatra}
+- Nakshatra: {nakshatra} (Pada {chart_data.get('nakshatra_pada', 1)})
+- Nakshatra Lord: {chart_data.get('nakshatra_lord', 'Unknown')}
 - Ascendant: {ascendant}
+- Sun Sign: {chart_data.get('sun_sign', 'Unknown')}
 
-FORMAT:
-🌟 Welcome, {name}!
+NAKSHATRA DETAILS:
+- Deity: {chart_data.get('deity', 'Unknown')}
+- Gana: {chart_data.get('gana', 'Unknown')}
+- Nadi: {chart_data.get('nadi', 'Unknown')}
+- Animal Sign: {chart_data.get('animal_sign', 'Unknown')}
+- Lucky Direction: {chart_data.get('lucky_direction', 'Unknown')}
+- Birth Stone: {chart_data.get('birth_stone', 'Unknown')}
+- Lucky Syllables: {chart_data.get('syllables', 'Unknown')}
 
-Your Cosmic Blueprint:
+CURRENT PERIOD:
+- Mahadasha: {current_dasha} (until {chart_data.get('dasha_end_date', 'Unknown')})
+- Antardasha: {current_antardasha}
 
-🌙 Moon in {moon_sign}:
-[2-3 lines about their emotional nature, specific traits - not generic]
+SPECIAL FACTORS:
+- Mangal Dosha: {"Yes - " + chart_data.get('mangal_dosha_desc', '') if chart_data.get('mangal_dosha') else "No"}
 
-⭐ {nakshatra} Nakshatra:
-[2-3 lines about their nakshatra qualities, ruling deity, life themes]
+═══════════════════════════════════════
+GENERATE PROFILE:
+═══════════════════════════════════════
 
-🌅 {ascendant} Rising:
-[1-2 lines about how others perceive them]
+🌟 COSMIC PROFILE: {name}
 
-💫 Key Strengths:
-- [Strength 1 - specific to their combination]
-- [Strength 2]
+🌙 MOON IN {moon_sign.upper()}:
+[3 specific personality traits unique to {moon_sign} moon - be precise, not generic]
 
-⚠️ Watch Out For:
-- [Challenge based on their chart]
+⭐ {nakshatra.upper()} NAKSHATRA:
+[2-3 lines about life themes, strengths from this nakshatra. Mention deity {chart_data.get('deity', '')} blessing]
 
-🎯 Life Tip:
-[One powerful insight specific to {moon_sign} + {nakshatra} combination]
+🌅 {ascendant.upper()} RISING:
+[How others perceive them, external personality]
+
+🔮 CURRENT LIFE PHASE ({current_dasha} Dasha):
+[What this dasha period brings until {chart_data.get('dasha_end_date', 'Unknown')}. Be specific about themes]
+
+💎 YOUR POWER FACTORS:
+- Birth Stone: {chart_data.get('birth_stone', 'Unknown')} — [Why it helps them]
+- Lucky Direction: {chart_data.get('lucky_direction', 'Unknown')} — [How to use it]
+- Power Syllables: {chart_data.get('syllables', 'Unknown')} — [For naming/mantras]
+
+⚠️ GROWTH AREAS:
+[1-2 challenges based on their specific chart combination]
+
+🎯 LIFE TIP:
+[One powerful insight specific to {moon_sign} + {nakshatra} + {current_dasha} dasha combination]
 
 RULES:
 - Be SPECIFIC to their exact combination
-- No generic statements that apply to everyone
-- No asterisk roleplay
-- Warm, professional tone
-- Under 200 words
+- No generic horoscope content
+- NO asterisk roleplay
+- Under 250 words
+- Today is {current['date']} - never mention 2024
+- For future dates, use precise months and years based on user's chart and dasha
 
 Generate:"""
 
     response = client.messages.create(
         model=MODEL_QUALITY,
-        max_tokens=450,
+        max_tokens=700,
         messages=[{"role": "user", "content": prompt}]
     )
     
