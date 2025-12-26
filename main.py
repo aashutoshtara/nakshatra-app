@@ -394,6 +394,19 @@ async def process_message(phone: str, text: str, platform: str = "whatsapp"):
                 f"_Type 'reset' to start over_"
             )
             return
+        
+        elif text_lower in ["2", "no", "nahi", "naa", "wrong"]:
+            await update_user(phone, {"state": "AWAITING_CITY"})
+            await reply(
+                "No problem! Let's try again.\n\n"
+                "Where were you *born*? (City name)\n\n"
+                "Example: Indore, Madhya Pradesh"
+            )
+            return
+        
+        else:
+            await reply("Please reply:\n\n1️⃣ Yes\n2️⃣ No")
+            return
     
     # ===== STATE: READY =====
 
@@ -404,6 +417,26 @@ async def process_message(phone: str, text: str, platform: str = "whatsapp"):
         nakshatra = user.get("nakshatra", "Ashwini")
         chart_data = user.get("chart_data", {})
         
+        # Handle "today" command specially
+        if text_lower in ["today", "aaj", "daily", "guidance", "horoscope"]:
+            await reply("🔮 Generating your personalized guidance...")
+            
+            # Get today's panchang (cached)
+            panchang = await get_today_panchang()
+            
+            # Generate daily guidance
+            guidance = await generate_daily_guidance(
+                name=name,
+                moon_sign=moon_sign,
+                nakshatra=nakshatra,
+                gender=gender,
+                panchang=panchang,
+                chart_data=chart_data
+            )
+            await reply(guidance)
+            return
+        
+        # Handle other questions
         response = await handle_user_query(
             name, moon_sign, nakshatra, gender, text, chart_data
         )
