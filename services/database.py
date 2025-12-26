@@ -34,9 +34,9 @@ async def create_user(phone: str) -> Dict[str, Any]:
         response = await client.post(
             f"{BASE_URL}/users",
             headers=get_headers(),
-            json={"phone": phone, "state": "AWAITING_NAME"}
+            json={"phone": phone, "state": "NEW"} 
         )
-        
+
         if response.status_code in [200, 201]:
             data = response.json()
             return data[0] if data else {"phone": phone, "state": "AWAITING_NAME"}
