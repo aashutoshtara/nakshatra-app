@@ -9,7 +9,7 @@ client = Anthropic(api_key=ANTHROPIC_API_KEY)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Models
-MODEL_QUALITY = "claude-sonnet-4-5-20250929"
+MODEL_QUALITY = "claude-haiku-4-5-20251001"
 MODEL_FAST = "claude-haiku-4-5-20251001"
 
 
