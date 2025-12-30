@@ -28,3 +28,7 @@ TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
 #Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+# Other settings
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")

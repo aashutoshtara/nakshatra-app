@@ -1,465 +1,442 @@
-from fastapi import FastAPI, Request, BackgroundTasks, Form
+"""
+Nakshatra - AI Vedic Astrologer
+Main FastAPI Application
+
+Run locally:
+    python main.py
+
+Run with uvicorn:
+    uvicorn main:app --reload --port 8000
+"""
+
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
-from typing import Optional
-import re
 
-from services.database import get_or_create_user, update_user, get_all_ready_users
-from services.whatsapp import send_message
-from services.telegram import send_telegram_message
-from services.astrology import calculate_birth_chart, get_today_panchang
-from services.geocoding import search_cities
-from services.ai import generate_daily_guidance, handle_user_query
+from config import TELEGRAM_BOT_TOKEN, WEBHOOK_URL, DEBUG
 
-app = FastAPI(title="nakshatra-app")
-
-# Common greetings to ignore as names
-GREETINGS = [
-    "hi", "hello", "hey", "hii", "hiii", "hiiii", "namaste", "namaskar", 
-    "hola", "start", "begin", "help", "menu", "reset", "restart",
-    "yo", "sup", "he    lo", "hllo", "hy", "good morning", "good evening",
-    "/start"
-]
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG if DEBUG else logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
-# ============== TWILIO WHATSAPP WEBHOOK ==============
+# =============================================================================
+# LIFESPAN (Startup/Shutdown)
+# =============================================================================
 
-@app.post("/webhook")
-async def webhook(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    From: Optional[str] = Form(None),
-    Body: Optional[str] = Form(None)
-):
-    """Receive WhatsApp messages from Twilio"""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown"""
+    logger.info("🚀 Starting Nakshatra...")
     
+    # Initialize Telegram bot
     try:
-        phone = From.replace("whatsapp:", "").replace("+", "") if From else ""
-        text = Body.strip() if Body else ""
+        from services.telegram import create_telegram_bot
+        app.state.telegram_bot = create_telegram_bot()
+        await app.state.telegram_bot.initialize()
         
-        print(f"🔍 WhatsApp Received - Phone: {phone}, Text: {text}")
-        
-        if not phone or not text:
-            return PlainTextResponse("")
-        
-        background_tasks.add_task(process_message, phone, text, "whatsapp")
-        return PlainTextResponse("")
-    
+        # Set webhook if URL configured
+        if WEBHOOK_URL:
+            webhook_url = f"{WEBHOOK_URL}/webhook/telegram"
+            await app.state.telegram_bot.bot.set_webhook(webhook_url)
+            logger.info(f"✅ Telegram webhook set: {webhook_url}")
+        else:
+            logger.info("⚠️ No WEBHOOK_URL set - Telegram webhook not configured")
+            
     except Exception as e:
-        print(f"❌ WhatsApp Webhook error: {e}")
-        return PlainTextResponse("")
-
-
-# ============== TELEGRAM WEBHOOK ==============
-
-@app.post("/telegram")
-async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Receive Telegram messages"""
+        logger.error(f"❌ Failed to initialize Telegram: {e}")
+        app.state.telegram_bot = None
     
+    # Test VedAstro data
     try:
-        body = await request.json()
-        print(f"🔍 Telegram Received: {body}")
-        
-        message = body.get("message", {})
-        chat_id = str(message.get("chat", {}).get("id", ""))
-        text = message.get("text", "").strip()
-        
-        if not chat_id or not text:
-            return JSONResponse({"status": "ignored"})
-        
-        phone = f"TG_{chat_id}"
-        
-        background_tasks.add_task(process_message, phone, text, "telegram")
-        return JSONResponse({"status": "ok"})
-    
+        from data.vedastro import vedastro
+        test = vedastro.get_planet_in_sign("Sun", "Aries")
+        if test:
+            logger.info("✅ VedAstro data loaded")
+        else:
+            logger.warning("⚠️ VedAstro data might not be loaded correctly")
     except Exception as e:
-        print(f"❌ Telegram Webhook error: {e}")
-        return JSONResponse({"status": "error"})
+        logger.error(f"❌ VedAstro error: {e}")
+    
+    # Test database connection
+    try:
+        from services.database import get_user_by_phone
+        logger.info("✅ Database module loaded")
+    except Exception as e:
+        logger.error(f"❌ Database error: {e}")
+    
+    logger.info("🌟 Nakshatra is ready!")
+    
+    yield  # App runs here
+    
+    # Shutdown
+    logger.info("👋 Shutting down Nakshatra...")
+    if hasattr(app.state, 'telegram_bot') and app.state.telegram_bot:
+        await app.state.telegram_bot.shutdown()
 
 
-# ============== MESSAGE PROCESSOR ==============
+# =============================================================================
+# FASTAPI APP
+# =============================================================================
 
-async def process_message(phone: str, text: str, platform: str = "whatsapp"):
-    """Process message based on user state"""
-    
-    # Helper to reply on correct platform
-    async def reply(message: str):
-        if platform == "telegram":
-            chat_id = phone.replace("TG_", "")
-            await send_telegram_message(chat_id, message)
-        else:
-            await send_message(phone, message)
-    
-    user = await get_or_create_user(phone)
-    state = user.get("state", "NEW")
-    text_lower = text.lower().strip()
-    
-    print(f"📩 [{platform.upper()}] {phone} ({state}): {text}")
-    
-    # ===== RESET COMMAND =====
-    if text_lower in ["reset", "restart", "start over"]:
-        await update_user(phone, {
-            "state": "NEW",
-            "name": None,
-            "gender": None,
-            "dob": None,
-            "birth_time": None,
-            "birth_city": None,
-            "moon_sign": None,
-            "nakshatra": None,
-            "ascendant": None
-        })
-        await reply(
-            "🔄 Let's start fresh!\n\n"
-            "🙏 *Namaste! Welcome to Nakshatra!*\n\n"
-            "I'm your personal Vedic astrology guide.\n\n"
-            "What's your *name*?"
-        )
-        await update_user(phone, {"state": "AWAITING_NAME"})
-        return
-    
-    # ===== STATE: NEW =====
-    if state == "NEW" or state is None:
-        await reply(
-            "🙏 *Namaste! Welcome to Nakshatra!*\n\n"
-            "I'm your personal Vedic astrology guide.\n\n"
-            "What's your *name*?"
-        )
-        await update_user(phone, {"state": "AWAITING_NAME"})
-        return
-    
-    # ===== STATE: AWAITING_NAME =====
-    elif state == "AWAITING_NAME":
-        if text_lower in GREETINGS:
-            await reply(
-                "Please tell me your *actual name* 😊\n\n"
-                "For example: Rahul, Priya, Amit"
-            )
-            return
-        
-        name = text.strip().title()
-        
-        if len(name) < 2:
-            await reply(
-                "Name too short. Please enter your full name.\n\n"
-                "For example: Rahul, Priya, Amit"
-            )
-            return
-        
-        if not re.match(r'^[a-zA-Z\s]+$', name):
-            await reply(
-                "Please enter a valid name (letters only)\n\n"
-                "For example: Rahul, Priya, Amit"
-            )
-            return
-        
-        await update_user(phone, {"name": name, "state": "AWAITING_GENDER"})
-        await reply(
-            f"Nice to meet you, *{name}*! ✨\n\n"
-            "Are you:\n\n"
-            "1️⃣ Male\n"
-            "2️⃣ Female"
-        )
-        return
-    
-    # ===== STATE: AWAITING_GENDER ===== ← THIS WAS MISSING!
-    elif state == "AWAITING_GENDER":
-        if text_lower in ["1", "male", "m", "boy", "man", "ladka"]:
-            gender = "male"
-        elif text_lower in ["2", "female", "f", "girl", "woman", "ladki"]:
-            gender = "female"
-        else:
-            await reply(
-                "Please reply:\n\n"
-                "1️⃣ for Male\n"
-                "2️⃣ for Female"
-            )
-            return
-        
-        await update_user(phone, {"gender": gender, "state": "AWAITING_DOB"})
-        await reply(
-            "What's your *date of birth*?\n\n"
-            "Format: DD-MM-YYYY\n"
-            "Example: 15-03-1992"
-        )
-        return
-    
-    # ===== STATE: AWAITING_DOB =====
-    elif state == "AWAITING_DOB":
-        match = re.match(r'(\d{1,2})[-/](\d{1,2})[-/](\d{4})', text)
-        if not match:
-            await reply(
-                "Please enter date as *DD-MM-YYYY*\n\n"
-                "Example: 15-03-1992"
-            )
-            return
-        
-        day, month, year = match.groups()
-        
-        try:
-            day_int, month_int, year_int = int(day), int(month), int(year)
-            if not (1 <= day_int <= 31 and 1 <= month_int <= 12 and 1900 <= year_int <= 2025):
-                raise ValueError("Invalid date")
-        except:
-            await reply("Please enter a valid date\n\nExample: 15-03-1992")
-            return
-        
-        dob = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-        
-        await update_user(phone, {"dob": dob, "state": "AWAITING_TIME_CHOICE"})
-        await reply(
-            "Got it! 📝\n\n"
-            "Do you know your *exact birth time*?\n\n"
-            "1️⃣ Yes\n"
-            "2️⃣ No / Not sure\n\n"
-            "Reply 1 or 2"
-        )
-        return
-    
-    # ===== STATE: AWAITING_TIME_CHOICE =====
-    elif state == "AWAITING_TIME_CHOICE":
-        if text_lower in ["1", "yes", "haan", "ha"]:
-            await update_user(phone, {"state": "AWAITING_TIME_INPUT"})
-            await reply(
-                "What time were you born?\n\n"
-                "Example: 5:30 AM or 17:30"
-            )
-        else:
-            await update_user(phone, {"birth_time": "12:00:00", "state": "AWAITING_CITY"})
-            await reply(
-                "No problem! 👍\n\n"
-                "Where were you *born*? (City name)\n\n"
-                "Example: Indore, Varanasi, Pune"
-            )
-        return
-    
-    # ===== STATE: AWAITING_TIME_INPUT =====
-    elif state == "AWAITING_TIME_INPUT":
-        time_str = "12:00:00"
-        match = re.match(r'(\d{1,2}):?(\d{2})?\s*(am|pm|AM|PM)?', text)
-        if match:
-            hours = int(match.group(1))
-            mins = match.group(2) or "00"
-            period = match.group(3)
-            if period and period.lower() == "pm" and hours < 12:
-                hours += 12
-            if period and period.lower() == "am" and hours == 12:
-                hours = 0
-            time_str = f"{hours:02d}:{mins}:00"
-        
-        await update_user(phone, {"birth_time": time_str, "state": "AWAITING_CITY"})
-        await reply(
-            "Where were you *born*? (City name)\n\n"
-            "Example: Indore, Varanasi, Pune"
-        )
-        return
-    
-    # ===== STATE: AWAITING_CITY =====
-    elif state == "AWAITING_CITY":
-        city_input = text.strip().title()
-        
-        city_options = await search_cities(city_input)
-        
-        if not city_options:
-            await reply(
-                f"Couldn't find *{city_input}*. 🤔\n\n"
-                "Please try:\n"
-                "• Check spelling\n"
-                "• Enter nearest big city\n"
-                "• Add state name (e.g., Indore MP)"
-            )
-            return
-        
-        if len(city_options) == 1:
-            city = city_options[0]
-            await update_user(phone, {
-                "pending_city": city["name"],
-                "pending_lat": city["lat"],
-                "pending_lng": city["lng"],
-                "state": "AWAITING_CITY_CONFIRM"
-            })
-            await reply(
-                f"📍 Found: *{city['name']}*\n\n"
-                "Is this correct?\n\n"
-                "1️⃣ Yes\n"
-                "2️⃣ No, search again"
-            )
-        else:
-            options_text = "📍 *Multiple locations found:*\n\n"
-            for i, city in enumerate(city_options[:5], 1):
-                options_text += f"{i}️⃣ {city['name']}\n"
-            
-            options_text += "\nReply with the number (1-5)"
-            
-            await update_user(phone, {
-                "pending_cities": city_options[:5],
-                "state": "AWAITING_CITY_SELECT"
-            })
-            await reply(options_text)
-        return
-    
-    # ===== STATE: AWAITING_CITY_SELECT =====
-    elif state == "AWAITING_CITY_SELECT":
-        try:
-            selection = int(text.strip())
-            pending_cities = user.get("pending_cities", [])
-            
-            if 1 <= selection <= len(pending_cities):
-                city = pending_cities[selection - 1]
-                await update_user(phone, {
-                    "pending_city": city["name"],
-                    "pending_lat": city["lat"],
-                    "pending_lng": city["lng"],
-                    "state": "AWAITING_CITY_CONFIRM"
-                })
-                await reply(
-                    f"📍 You selected: *{city['name']}*\n\n"
-                    "Is this correct?\n\n"
-                    "1️⃣ Yes\n"
-                    "2️⃣ No, search again"
-                )
-            else:
-                await reply("Please reply with a number from the list (1-5)")
-        except:
-            await reply("Please reply with a number (1-5)")
-        return
-    
-    # ===== STATE: AWAITING_CITY_CONFIRM =====
-    elif state == "AWAITING_CITY_CONFIRM":
-        if text_lower in ["1", "yes", "haan", "ha", "correct", "sahi"]:
-            await reply("✨ Calculating your birth chart...")
-            
-            user = await get_or_create_user(phone)
-            city = user.get("pending_city", "Delhi")
-            lat = user.get("pending_lat", 28.6139)
-            lng = user.get("pending_lng", 77.2090)
-            dob = user.get("dob", "1990-01-01")
-            birth_time = user.get("birth_time", "12:00:00")
-            name = user.get("name", "Friend")
-            gender = user.get("gender", "male")
-            
-            # Get complete chart
-            chart = await calculate_birth_chart(dob, birth_time, lat, lng)
-            
-            print(f"📊 Chart: {chart}")
-            
-            # Store ONLY essential fields (no chart_data blob)
-            try:
-                await update_user(phone, {
-                    "birth_city": city,
-                    "latitude": lat,
-                    "longitude": lng,
-                    "moon_sign": chart.get("moon_sign"),
-                    "sun_sign": chart.get("sun_sign"),
-                    "nakshatra": chart.get("nakshatra"),
-                    "nakshatra_pada": chart.get("nakshatra_pada"),
-                    "nakshatra_lord": chart.get("nakshatra_lord"),
-                    "ascendant": chart.get("ascendant"),
-                    "current_dasha": chart.get("current_dasha"),
-                    "current_antardasha": chart.get("current_antardasha"),
-                    "dasha_end_date": chart.get("dasha_end_date"),
-                    "antardasha_end_date": chart.get("antardasha_end_date"),
-                    "mangal_dosha": chart.get("mangal_dosha", False),
-                    "deity": chart.get("deity"),
-                    "gana": chart.get("gana"),
-                    "lucky_color": chart.get("lucky_color"),
-                    "birth_stone": chart.get("birth_stone"),
-                    "lucky_direction": chart.get("lucky_direction"),
-                    "state": "READY",
-                    "pending_city": None,
-                    "pending_lat": None,
-                    "pending_lng": None,
-                    "pending_cities": None
-                })
-                print("✅ User updated to READY state")
-            except Exception as e:
-                print(f"❌ Update failed: {e}")
-            
-            # Verify update
-            user_check = await get_or_create_user(phone)
-            print(f"🔍 State after update: {user_check.get('state')}")
-            
-            # Build profile message
-            mangal_warning = "\n⚠️ *Mangal Dosha:* Yes" if chart.get("mangal_dosha") else ""
-            
-            await reply(
-                f"🌟 *Your Vedic Birth Chart*\n\n"
-                f"🌙 *Moon Sign:* {chart.get('moon_sign')}\n"
-                f"☀️ *Sun Sign:* {chart.get('sun_sign')}\n"
-                f"⭐ *Nakshatra:* {chart.get('nakshatra')} (Pada {chart.get('nakshatra_pada')})\n"
-                f"🔱 *Nakshatra Lord:* {chart.get('nakshatra_lord')}\n"
-                f"🕉️ *Deity:* {chart.get('deity')}\n"
-                f"{mangal_warning}\n\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"🔮 *Current Period*\n"
-                f"Mahadasha: {chart.get('current_dasha')} (until {chart.get('dasha_end_date')})\n"
-                f"Antardasha: {chart.get('current_antardasha')} (until {chart.get('antardasha_end_date')})\n\n"
-                f"━━━━━━━━━━━━━━\n"
-                f"💎 *Lucky*\n"
-                f"Color: {chart.get('lucky_color')}\n"
-                f"Stone: {chart.get('birth_stone')}\n"
-                f"Direction: {chart.get('lucky_direction', 'N/A')}\n\n"
-                f"━━━━━━━━━━━━━━\n\n"
-                f"Type *'today'* for daily guidance!\n"
-                f"Or ask me anything about your chart 🙏\n\n"
-                f"_Type 'reset' to start over_"
-            )
-            return
-        
-        elif text_lower in ["2", "no", "nahi", "naa", "wrong"]:
-            await update_user(phone, {"state": "AWAITING_CITY"})
-            await reply(
-                "No problem! Let's try again.\n\n"
-                "Where were you *born*? (City name)"
-            )
-            return
-        
-        else:
-            await reply("Please reply:\n\n1️⃣ Yes\n2️⃣ No")
-            return
-    
-    # ===== STATE: READY =====
-
-    elif state == "READY":
-        name = user.get("name", "Friend")
-        gender = user.get("gender", "male")
-        moon_sign = user.get("moon_sign", "Mesha")
-        nakshatra = user.get("nakshatra", "Ashwini")
-        chart_data = user.get("chart_data", {})
-        
-        # Handle "today" command specially
-        if text_lower in ["today", "aaj", "daily", "guidance", "horoscope"]:
-            await reply("🔮 Generating your personalized guidance...")
-            
-            # Get today's panchang (cached)
-            panchang = await get_today_panchang()
-            
-            # Generate daily guidance
-            guidance = await generate_daily_guidance(
-                name=name,
-                moon_sign=moon_sign,
-                nakshatra=nakshatra,
-                gender=gender,
-                panchang=panchang,
-                chart_data=chart_data
-            )
-            await reply(guidance)
-            return
-        
-        # Handle other questions
-        response = await handle_user_query(
-            name, moon_sign, nakshatra, gender, text, chart_data
-        )
-        await reply(response)
-        return
+app = FastAPI(
+    title="Nakshatra",
+    description="AI Vedic Astrologer - Telegram & WhatsApp Bot",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 
-# ============== HEALTH CHECK ==============
+# =============================================================================
+# HEALTH ENDPOINTS
+# =============================================================================
 
 @app.get("/")
-async def health():
-    return {"status": "running", "app": "Nakshatra Bot", "platforms": ["whatsapp", "telegram"]}
+async def root():
+    """Health check"""
+    return {"status": "ok", "service": "Nakshatra AI Astrologer"}
 
+
+@app.get("/health")
+async def health():
+    """Detailed health check"""
+    status = {
+        "status": "healthy",
+        "service": "Nakshatra",
+        "components": {}
+    }
+    
+    # Check Telegram
+    if hasattr(app.state, 'telegram_bot') and app.state.telegram_bot:
+        status["components"]["telegram"] = "connected"
+    else:
+        status["components"]["telegram"] = "not configured"
+    
+    # Check VedAstro
+    try:
+        from data.vedastro import vedastro
+        test = vedastro.get_planet_in_sign("Moon", "Cancer")
+        status["components"]["vedastro"] = "loaded" if test else "error"
+    except:
+        status["components"]["vedastro"] = "error"
+    
+    # Check Database
+    try:
+        from services.database import supabase
+        status["components"]["database"] = "connected" if supabase else "not configured"
+    except:
+        status["components"]["database"] = "error"
+    
+    return status
+
+
+# =============================================================================
+# TELEGRAM WEBHOOK
+# =============================================================================
+
+@app.post("/webhook/telegram")
+async def telegram_webhook(request: Request):
+    """Handle Telegram webhook"""
+    try:
+        if not hasattr(app.state, 'telegram_bot') or not app.state.telegram_bot:
+            logger.error("Telegram bot not initialized")
+            return JSONResponse({"status": "error", "message": "Bot not initialized"})
+        
+        # Get update data
+        data = await request.json()
+        logger.debug(f"Telegram update: {data}")
+        
+        # Process update
+        from telegram import Update
+        update = Update.de_json(data, app.state.telegram_bot.bot)
+        await app.state.telegram_bot.process_update(update)
+        
+        return JSONResponse({"status": "ok"})
+        
+    except Exception as e:
+        logger.error(f"Telegram webhook error: {e}")
+        return JSONResponse({"status": "error", "message": str(e)})
+
+
+# =============================================================================
+# WHATSAPP WEBHOOK
+# =============================================================================
+
+@app.post("/webhook/whatsapp")
+async def whatsapp_webhook(request: Request):
+    """Handle Twilio WhatsApp webhook"""
+    try:
+        # Parse form data
+        form_data = await request.form()
+        form_dict = dict(form_data)
+        
+        logger.debug(f"WhatsApp webhook: {form_dict}")
+        
+        # Process message
+        from services.whatsapp import process_whatsapp_webhook
+        twiml_response = await process_whatsapp_webhook(form_dict)
+        
+        return PlainTextResponse(twiml_response, media_type="application/xml")
+        
+    except Exception as e:
+        logger.error(f"WhatsApp webhook error: {e}")
+        # Return empty TwiML on error
+        return PlainTextResponse(
+            '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            media_type="application/xml"
+        )
+
+
+# =============================================================================
+# API ENDPOINTS
+# =============================================================================
+
+@app.get("/api/v1/panchanga")
+async def get_panchanga(lat: float = 28.6139, lng: float = 77.2090):
+    """Get today's panchanga for a location"""
+    try:
+        from services.astrology import get_today_panchanga
+        panchanga = get_today_panchanga(lat=lat, lng=lng)
+        return {"status": "success", "data": panchanga}
+    except Exception as e:
+        logger.error(f"Panchanga error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/chart")
+async def calculate_chart(
+    date: str,
+    time: str,
+    lat: float,
+    lng: float,
+    place: str = "Unknown"
+):
+    """
+    Calculate birth chart
+    
+    Args:
+        date: YYYY-MM-DD
+        time: HH:MM
+        lat: Latitude
+        lng: Longitude
+        place: Place name
+    """
+    try:
+        from services.astrology import calculate_birth_chart
+        chart = calculate_birth_chart(
+            date_str=date,
+            time_str=time,
+            lat=lat,
+            lng=lng,
+            place_name=place
+        )
+        return {"status": "success", "data": chart}
+    except Exception as e:
+        logger.error(f"Chart calculation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/ask")
+async def ask_astrologer_api(
+    question: str,
+    name: str,
+    birth_date: str,
+    birth_time: str,
+    birth_place: str,
+    lat: float,
+    lng: float
+):
+    """
+    Ask the AI astrologer a question
+    
+    This calculates the chart and returns an AI-powered response.
+    """
+    try:
+        from services.astrology import calculate_birth_chart
+        from services.ai_astrologer import ask_astrologer, UserChart
+        
+        # Calculate chart
+        chart_result = calculate_birth_chart(
+            date_str=birth_date,
+            time_str=birth_time,
+            lat=lat,
+            lng=lng,
+            place_name=birth_place
+        )
+        
+        # Build planets dict
+        planets = {}
+        for p in chart_result.get("planets", []):
+            planets[p["planet"]] = p["sign"]
+        
+        # Get moon data
+        moon_data = next((p for p in chart_result.get("planets", []) if p["planet"] == "Moon"), {})
+        sun_data = next((p for p in chart_result.get("planets", []) if p["planet"] == "Sun"), {})
+        
+        # Build user chart
+        user_chart = UserChart(
+            name=name,
+            birth_date=birth_date,
+            birth_time=birth_time,
+            birth_place=birth_place,
+            ascendant=chart_result.get("ascendant", {}).get("sign", ""),
+            moon_sign=moon_data.get("sign", ""),
+            sun_sign=sun_data.get("sign", ""),
+            nakshatra=moon_data.get("nakshatra", ""),
+            planets=planets,
+            current_mahadasha=chart_result.get("dasha", {}).get("mahadasha", ""),
+            current_antardasha=chart_result.get("dasha", {}).get("antardasha", ""),
+        )
+        
+        # Ask AI
+        response = ask_astrologer(question, user_chart)
+        
+        return {
+            "status": "success",
+            "question": question,
+            "response": response,
+            "chart_summary": {
+                "ascendant": user_chart.ascendant,
+                "moon_sign": user_chart.moon_sign,
+                "sun_sign": user_chart.sun_sign,
+                "nakshatra": user_chart.nakshatra,
+                "current_dasha": f"{user_chart.current_mahadasha}/{user_chart.current_antardasha}"
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Ask API error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/interpretation/{prediction_name}")
+async def get_interpretation(prediction_name: str):
+    """
+    Get VedAstro interpretation by name
+    
+    Examples:
+        /api/v1/interpretation/SunInAries
+        /api/v1/interpretation/House7LordInHouse1
+    """
+    try:
+        from data.vedastro import vedastro
+        result = vedastro.get_prediction(prediction_name)
+        
+        if result:
+            return {"status": "success", "data": result}
+        else:
+            raise HTTPException(status_code=404, detail="Prediction not found")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Interpretation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/search")
+async def search_interpretations(q: str, tag: str = None):
+    """
+    Search VedAstro interpretations
+    
+    Args:
+        q: Search keyword
+        tag: Optional tag filter (Yoga, Travel, Marriage, etc.)
+    """
+    try:
+        from data.vedastro import vedastro
+        
+        if tag:
+            results = vedastro.search_by_tag(tag)
+            # Filter by keyword if provided
+            if q:
+                q_lower = q.lower()
+                results = [r for r in results if q_lower in r.get("description", "").lower()]
+        else:
+            results = vedastro.search_description(q)
+        
+        return {
+            "status": "success",
+            "query": q,
+            "tag": tag,
+            "count": len(results),
+            "results": results[:20]  # Limit to 20
+        }
+        
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# RUN SERVER
+# =============================================================================
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import sys
+    
+    print("""
+    ╔═══════════════════════════════════════════╗
+    ║     🌟 NAKSHATRA - AI Vedic Astrologer     ║
+    ╠═══════════════════════════════════════════╣
+    ║  Telegram + WhatsApp + REST API            ║
+    ║  Powered by Claude AI + VedAstro           ║
+    ╚═══════════════════════════════════════════╝
+    """)
+    
+    if "--polling" in sys.argv:
+        # =================================================================
+        # LOCAL TESTING - Polling Mode
+        # =================================================================
+        print("🔄 Starting in POLLING mode (local testing)...")
+        print("   Press Ctrl+C to stop\n")
+        
+        import asyncio
+        from services.telegram import create_telegram_bot
+        
+        async def run_polling():
+            # Create bot
+            bot_app = create_telegram_bot()
+            
+            # Initialize
+            await bot_app.initialize()
+            await bot_app.start()
+            
+            # Delete any existing webhook
+            await bot_app.bot.delete_webhook()
+            
+            # Start polling
+            await bot_app.updater.start_polling(drop_pending_updates=True)
+            
+            print("🌟 Nakshatra Bot is running!")
+            print("   Send /start to your bot on Telegram\n")
+            
+            # Keep running until Ctrl+C
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except KeyboardInterrupt:
+                print("\n👋 Shutting down...")
+            finally:
+                await bot_app.updater.stop()
+                await bot_app.stop()
+                await bot_app.shutdown()
+        
+        asyncio.run(run_polling())
+    
+    else:
+        # =================================================================
+        # PRODUCTION - Webhook Mode
+        # =================================================================
+        import uvicorn
+        uvicorn.run(
+            "main:app",
+            host="0.0.0.0",
+            port=8000,
+            reload=DEBUG
+        )

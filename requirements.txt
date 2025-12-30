@@ -1,6 +1,26 @@
+# Core
 fastapi==0.109.0
 uvicorn==0.27.0
-httpx==0.26.0
-anthropic==0.18.1
 python-dotenv==1.0.0
-python-multipart==0.0.6
+
+# AI - version compatible with httpx 0.25.x
+anthropic==0.25.0
+
+# Telegram
+python-telegram-bot==20.7
+
+# WhatsApp (Twilio)
+twilio==8.10.0
+
+# Database
+supabase==2.3.4
+
+# Astrology
+PyJHora>=1.0.0
+
+# PyJHora dependencies
+geopy==2.4.1
+timezonefinder==6.2.0
+pyswisseph>=2.10.0
+scipy>=1.11.0
+numpy>=1.24.0
