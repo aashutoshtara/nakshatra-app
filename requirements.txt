@@ -20,7 +20,15 @@ PyJHora>=1.0.0
 
 # PyJHora dependencies
 geopy==2.4.1
-timezonefinder==6.2.0
 pyswisseph>=2.10.0
 scipy>=1.11.0
 numpy>=1.24.0
+
+# Timezone - use tzfpy instead of timezonefinder (no h3/cmake dependency)
+tzfpy>=1.0.0
+
+# Geocoding
+httpx>=0.25.0
+
+# Additional
+pytz>=2023.3
