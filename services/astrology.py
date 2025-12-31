@@ -5,19 +5,16 @@ Core Vedic Astrology calculations using PyJHora
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
+from timezonefinder import TimezoneFinder
 import pytz
-
-# Try tzfpy first, fallback to manual lookup
-try:
-    from tzfpy import get_tz
-    _use_tzfpy = True
-except ImportError:
-    _use_tzfpy = False
 
 # PyJHora imports
 from jhora.panchanga import drik
 from jhora.horoscope.dhasa.graha import vimsottari
 from jhora import utils
+
+# Initialize timezone finder (cached)
+_tf = TimezoneFinder()
 
 
 # =============================================================================
@@ -611,32 +608,8 @@ NAKSHATRAS = {
 
 def get_timezone_from_coords(lat: float, lng: float) -> str:
     """Get timezone string from coordinates"""
-    if _use_tzfpy:
-        try:
-            # tzfpy uses (longitude, latitude) order
-            tz = get_tz(lng, lat)
-            return tz or "Asia/Kolkata"
-        except:
-            pass
-    
-    # Fallback: Simple lookup for India (most users)
-    # India spans roughly 68-97°E longitude
-    if 68 <= lng <= 97 and 8 <= lat <= 37:
-        return "Asia/Kolkata"
-    
-    # Basic fallback for other regions
-    if lng < -30:
-        return "America/New_York"  # Americas
-    elif lng < 30:
-        return "Europe/London"  # Europe/Africa
-    elif lng < 60:
-        return "Europe/Moscow"  # Middle East
-    elif lng < 100:
-        return "Asia/Kolkata"  # South Asia
-    else:
-        return "Asia/Shanghai"  # East Asia
-    
-    return "UTC"
+    tz = _tf.timezone_at(lat=lat, lng=lng)
+    return tz or "UTC"
 
 
 def format_time(hours: float) -> str:
